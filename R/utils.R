@@ -54,9 +54,9 @@ get_dictionary <- function(dictionary, org = "MSF") {
     # NOTE: For future collaborators, if you have other dictionaries you wish to
     #       add to this project, then you should place the names of your valid
     #       dictionaries here in SURVEYS and OUTBREAKS.
-    # } else if (toupper(org) == "WHO") {
-    #   SURVEYS <- c()
-    #   OUTBREAKS <- c()
+    } else if (toupper(org) == "WHO") {
+      SURVEYS <- c()
+      OUTBREAKS <- c("Cholera")
   } else {
     # no dictionary available
     msg <- sprintf("No dictionaries from '%s' available", org)
@@ -101,7 +101,7 @@ enforce_timing <- function(x, first, second, add = 2, inclusive = FALSE) {
 
 fix_dates <- function(dis_output) {
 
-  # Fix DATES ----------------------------------------------------------------
+  # Fix DATES MSF --------------------------------------------------------------
   #
   # The date sampling we did above
   # exit dates before date of entry
