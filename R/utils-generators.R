@@ -14,7 +14,8 @@ sample_age <- function(x, n) {
 #'
 #' @return a data frame with ages in the dis_output
 #' @noRd
-gen_ages <- function(dis_output, numcases, set_age_na = TRUE) {
+gen_ages <- function(dis_output, numcases, set_age_na = TRUE,
+                     year_cutoff = 2, month_cutoff = 2) {
 
   # GENERATE AGES --------------------------------------------------------------
 
@@ -32,7 +33,7 @@ gen_ages <- function(dis_output, numcases, set_age_na = TRUE) {
   if (has_value(age_year_var)) {
     # sample 0:120
     years <- sample_age(120L, numcases)
-    U2_YEARS <- which(years <= 2)
+    U2_YEARS <- which(years <= year_cutoff)
     if (set_age_na) {
       years[U2_YEARS] <- NA_integer_
     }
@@ -47,10 +48,10 @@ gen_ages <- function(dis_output, numcases, set_age_na = TRUE) {
 
   if (has_value(age_month_var) && length(U2_YEARS) > 0 && sum(U2_YEARS) > 0) {
     # age_month
-    months <- sample_age(24L, length(U2_YEARS))
+    months <- sample_age((year_cutoff + 1) * 12, length(U2_YEARS))
     damv <- dis_output[[age_month_var]]
     damv[U2_YEARS] <- months
-    U2_MONTHS <- which(damv <= 2)
+    U2_MONTHS <- which(damv <= month_cutoff)
     if (set_age_na) {
       damv[U2_MONTHS] <- NA_integer_
     }
@@ -65,7 +66,8 @@ gen_ages <- function(dis_output, numcases, set_age_na = TRUE) {
 
   if (has_value(age_day_var) && length(U2_MONTHS) > 0 && sum(U2_MONTHS) > 0) {
     # age_days
-    dis_output[[age_day_var]][U2_MONTHS] <- sample_age(60L, length(U2_MONTHS))
+    dis_output[[age_day_var]][U2_MONTHS] <- sample_age((month_cutoff + 1) * 20,
+                                                       length(U2_MONTHS))
   } else {
     if (has_value(age_day_var)) {
       dis_output[[age_day_var]] <- NA_integer_
@@ -101,21 +103,15 @@ gen_freetext <- function(n) {
 #' @param dis_output a data frame
 #' @param cluster the name of the cluster columns
 #' @param household the name of the household column
+#' @param eligible the name of the column counting the number to be interviewed
 #'
 #' @return a data frame with household and clusters
 #' @noRd
-gen_hh_clusters <- function(dis_output, n, cluster = "cluster_number", household = "household_id") {
-
-  # sample villages
-  dis_output$village <- gen_village(n)
-  # make two health districts
-  dis_output$health_district <- ifelse(grepl("[AB]", dis_output$village),
-    yes = "District A",
-    no = "District B"
-  )
+gen_hh_clusters <- function(dis_output, n, cluster = "cluster_number",
+                            household = "household_number", eligible = "member_number") {
 
   # cluster ID (based on village)
-  dis_output[[cluster]] <- as.numeric(factor(dis_output$village))
+  dis_output[[cluster]] <- as.numeric(factor(dis_output$village_name))
 
 
   # household ID (numbering starts again for each cluster)
@@ -126,41 +122,82 @@ gen_hh_clusters <- function(dis_output, n, cluster = "cluster_number", household
     dis_output[[household]][dis_output[[cluster]] == i] <- hhid
   }
 
-  dis_output <- gen_eligible_interviewed(
-    dis_output, 
-    household = household, 
-    cluster = cluster
+  dis_output[[eligible]] <- gen_eligible_interviewed(
+    dis_output,
+    household = household,
+    cluster = cluster,
+    eligible = eligible
   )
 
   return(dis_output)
 }
 
-#' generate eligible and interviewed columns in a data frame
+#' generate appropriate "eligible" count columns in a data frame
 #'
 #' @param dis_output a data frame containing household and cluster
 #' @param household [character] the column specifying household
 #' @param cluster [character] the column specifying cluster
 #'
-#' @return dis_output with two additional columns:
-#'   - eligible: the number of individuals within each household and cluster
-#'   - interviewed: 75% of eligible
+#' @return vector of numbers with appropriate length for eligible column in dis_output
+#'   - eligible: the number of individuals within each household increased by 25%
 #'
 #' @noRd
-gen_eligible_interviewed <- function(dis_output, household = "q14_hh_no", cluster = "q77_what_is_the_cluster_number") {
+gen_eligible_interviewed <- function(dis_output, household = "household_number",
+                                     cluster = "cluster_number",
+                                     eligible = "member_number") {
 
-  dis_output[["eligible"]] <- NULL
-  dis_output[["interviewed"]] <- NULL
-
+  # make variables tidy-accessible
   hh <- rlang::sym(household)
   cl <- rlang::sym(cluster)
+  el <- rlang::sym(eligible)
 
   # get counts of people by household and cluster
   hh_count <- dplyr::count(dis_output, !!hh, !!cl, .drop = FALSE, name = "eligible")
 
-  # make interviewed 3/4s of those eligible
-  hh_count[["interviewed"]] <- round(hh_count[["eligible"]] * 0.75, digits = 0L)
+  # make the number of eligible 25% more than count of actually interviewed
+  hh_count$eligible <- round(hh_count$eligible * 1.25, digits = 0L)
 
-  # merge with dis_output and return
-  dplyr::left_join(dis_output, hh_count, by = c(household, cluster))
+  # merge with dis_output to get the correct number
+  intermed <- dplyr::left_join(dis_output, hh_count, by = c(household, cluster))
+
+  # return just the counts
+  intermed$eligible
+}
+
+
+#' generate appropriate "eligible" count columns in a data frame
+#'
+#' @param dis_output a data frame containing household and cluster
+#' @param household [character] the column specifying household
+#' @param cluster [character] the column specifying cluster
+#' @param parent_index [character] name of a new column to be created with unique identifiers at the household level
+#' @param child_index [character] name of a new column to be created with unique identifiers of individuals
+#' @param uid_name [character] name of a new column to be created with unique identifiers
+#'
+#' @importFrom dplyr group_by mutate cur_group_id ungroup
+#' @importFrom rlang .data :=
+#'
+#' @return a new variable in your dataframe which successively numbers individuals
+#' in unique households to create an identifier
+#'
+#' @noRd
+
+gen_survey_uid <- function(dis_output,
+                           cluster = "cluster_number",
+                           household = "household_number",
+                           parent_index = "index",
+                           child_index = "index_y",
+                           uid_name = "uid") {
+
+  dis_output <- dplyr::group_by(dis_output,
+                          .data[[cluster]],
+                          .data[[household]])
+
+  dis_output <- dplyr::mutate(dis_output,
+                       {{parent_index}} := dplyr::cur_group_id(),
+                       {{child_index}} := rank(.data[[household]], ties.method = "first"),
+                       {{uid_name}} := sprintf("%s_%s", .data[[parent_index]], .data[[child_index]]))
+
+  dplyr::ungroup(dis_output)
 
 }
